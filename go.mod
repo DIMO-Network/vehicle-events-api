@@ -10,7 +10,7 @@ require (
 	github.com/ThreeDotsLabs/watermill-kafka/v3 v3.0.6
 	github.com/friendsofgo/errors v0.9.2
 	github.com/gofiber/fiber/v2 v2.52.5
-	github.com/golang-jwt/jwt/v4 v4.5.1
+	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/google/cel-go v0.24.0
 	github.com/lib/pq v1.10.9
 	github.com/pkg/errors v0.9.1
