@@ -53,16 +53,18 @@ type Signal struct {
 }
 
 type SignalListener struct {
-	log          zerolog.Logger
-	webhookCache *WebhookCache
-	store        db.Store
+	log            zerolog.Logger
+	webhookCache   *WebhookCache
+	store          db.Store
+	identityAPIURL string
 }
 
-func NewSignalListener(logger zerolog.Logger, wc *WebhookCache, store db.Store) *SignalListener {
+func NewSignalListener(logger zerolog.Logger, wc *WebhookCache, store db.Store, identityAPIURL string) *SignalListener {
 	return &SignalListener{
-		log:          logger,
-		webhookCache: wc,
-		store:        store,
+		log:            logger,
+		webhookCache:   wc,
+		store:          store,
+		identityAPIURL: identityAPIURL,
 	}
 }
 
@@ -102,6 +104,49 @@ func (l *SignalListener) processMessage(msg *message.Message) error {
 	}
 
 	for _, wh := range webhooks {
+		hasPerm, err := HasVehiclePermissions(l.identityAPIURL, fmt.Sprint(signal.TokenID), wh.DeveloperLicenseAddress, l.log)
+		if err != nil {
+			l.log.Error().Err(err).Msg("permission check failed")
+			continue
+		}
+		if !hasPerm {
+			l.log.Info().Msgf("permissions revoked for license %x on vehicle %d", wh.DeveloperLicenseAddress, signal.TokenID)
+			var dec sqltypes.Decimal
+			if err := dec.Scan(fmt.Sprint(signal.TokenID)); err == nil {
+				// 1) Delete the EventVehicle row and check its error
+				if delCount, err := models.EventVehicles(
+					qm.Where(
+						"event_id = ? AND vehicle_token_id = ? AND developer_license_address = ?",
+						wh.ID, dec, wh.DeveloperLicenseAddress,
+					),
+				).DeleteAll(context.Background(), l.store.DBS().Writer); err != nil {
+					l.log.Error().
+						Err(err).
+						Str("event_id", wh.ID).
+						Uint32("vehicle_token", signal.TokenID).
+						Msg("Failed to delete EventVehicle subscription")
+				} else {
+					l.log.Debug().
+						Str("event_id", wh.ID).
+						Uint32("vehicle_token", signal.TokenID).
+						Int("rows_deleted", int(delCount)).
+						Msg("Successfully removed EventVehicle subscription")
+				}
+
+				// 2) Refresh the cache and check its error
+				if err := l.webhookCache.PopulateCache(context.Background(), l.store.DBS().Reader); err != nil {
+					l.log.Error().
+						Err(err).
+						Msg("Failed to refresh webhook cache after permission revocation")
+				} else {
+					l.log.Debug().
+						Uint32("vehicle_token", signal.TokenID).
+						Msg("Webhook cache refreshed after permission revocation")
+				}
+			}
+
+			continue
+		}
 		cooldownPassed, err := l.checkCooldown(wh, signal.TokenID)
 		if err != nil {
 			l.log.Error().Err(err).Msg("failed to check cooldown")
